@@ -1,7 +1,3 @@
-// ─────────────────────────────────────────────────────────
-// rollup.ts — tiered aggregation with distributed safety
-// ─────────────────────────────────────────────────────────
-//
 // Runs two jobs on schedule:
 //   • Hourly → Daily  (every hour, after hourlyRetentionDays)
 //   • Daily  → Monthly (every day,  after dailyRetentionDays)

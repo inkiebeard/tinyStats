@@ -26,7 +26,14 @@ Peer dependencies: `pg` and/or `ioredis` depending on which adapters you use.
 ```bash
 npm install          # Install dependencies
 npm run build        # Build to dist/ (ESM + CJS + types)
+npm test             # Run unit and scale tests
+npm run test:watch   # Run tests in watch mode
 ```
+
+**Tests include:**
+- Unit tests for collector behavior (double-buffer, error handling, flush)
+- Scale tests validating memory footprint (10K, 100K keys)
+- Performance benchmarks (increment latency, throughput, non-blocking flush)
 
 The build outputs:
 - `dist/index.js` — ESM bundle

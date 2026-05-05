@@ -21,6 +21,8 @@
   ],
   "scripts": {
     "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -37,7 +39,8 @@
   "devDependencies": {
     "@types/node": "^20.12.7",
     "tsup": "^8.0.2",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^2.0.0"
   },
   "peerDependencies": {
     "ioredis": "^5.0.0",

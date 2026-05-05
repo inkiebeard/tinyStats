@@ -1,7 +1,3 @@
-// ─────────────────────────────────────────────────────────
-// adapters/postgres.ts — full three-tier Postgres adapter
-// ─────────────────────────────────────────────────────────
-//
 // Writes to stats_hourly only. The RollupJob handles promotion
 // to stats_daily and stats_monthly on schedule.
 //

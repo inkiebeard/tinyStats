@@ -1,7 +1,3 @@
-// ─────────────────────────────────────────────────────────
-// adapters/redis.ts — hot-tier adapter using hourly hashes
-// ─────────────────────────────────────────────────────────
-//
 // Key structure:
 //   {namespace}:h:2025-05-05T14   → HASH { [recordKey]: count }
 //

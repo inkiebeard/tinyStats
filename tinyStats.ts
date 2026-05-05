@@ -1,7 +1,3 @@
-// ─────────────────────────────────────────────────────────
-// collector.ts — hot path counter with double-buffer flush
-// ─────────────────────────────────────────────────────────
-
 import type { CollectorOptions, FlushAdapter } from './types';
 
 function floorToHour(date: Date): Date {

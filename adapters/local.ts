@@ -1,7 +1,3 @@
-// ─────────────────────────────────────────────────────────
-// adapters/local.ts — in-memory adapter for dev and testing
-// ─────────────────────────────────────────────────────────
-
 import type { FlushAdapter } from '../types';
 
 interface BucketEntry {

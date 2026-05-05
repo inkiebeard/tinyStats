@@ -1,7 +1,3 @@
-// ─────────────────────────────────────────────────────────
-// adapters/composite.ts — fan-out across multiple adapters
-// ─────────────────────────────────────────────────────────
-//
 // Useful when you want e.g. Redis (hot reads) + Postgres (durability)
 // simultaneously. Uses Promise.allSettled so one failing adapter
 // doesn't block others.
