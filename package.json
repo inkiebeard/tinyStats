@@ -1,0 +1,54 @@
+{
+  "name": "tinystats",
+  "version": "0.1.0",
+  "description": "Zero-latency request counter with tiered time-series storage",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./schema.sql": "./schema.sql"
+  },
+  "files": [
+    "dist",
+    "schema.sql",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "stats",
+    "metrics",
+    "counters",
+    "timeseries",
+    "analytics",
+    "postgres",
+    "redis"
+  ],
+  "author": "Aaron Toomey <aaron@inkiebeard.codes>",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "tsup": "^8.0.2",
+    "typescript": "^5.4.5"
+  },
+  "peerDependencies": {
+    "ioredis": "^5.0.0",
+    "pg": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ioredis": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    }
+  }
+}
