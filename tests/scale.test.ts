@@ -8,6 +8,13 @@ function getMemoryUsageMB(): number {
   return process.memoryUsage().heapUsed / 1024 / 1024;
 }
 
+function perfLog(label: string, metrics: Record<string, string | number>): void {
+  const parts = Object.entries(metrics)
+    .map(([k, v]) => `${k}=${typeof v === 'number' ? v.toFixed(2) : v}`)
+    .join('  ');
+  console.log(`  [perf] ${label}: ${parts}`);
+}
+
 describe('Scale & Performance', () => {
   it('handles 10K active keys with ~1MB memory footprint', async () => {
     const adapter = new LocalAdapter();
@@ -28,6 +35,7 @@ describe('Scale & Performance', () => {
     // Per README: "10K active keys ≈ 0.5-1 MB"
     // Allow up to 2MB to account for test overhead
     expect(memDelta).toBeLessThan(2);
+    perfLog('10K keys memory', { 'delta_mb': memDelta, 'limit_mb': 2 });
 
     await stats.destroy();
   });
@@ -51,6 +59,7 @@ describe('Scale & Performance', () => {
     // Per README: "100K active keys ≈ 5-10 MB"
     // Allow up to 15MB to account for test overhead and GC timing
     expect(memDelta).toBeLessThan(15);
+    perfLog('100K keys memory', { 'delta_mb': memDelta, 'limit_mb': 15 });
 
     await stats.destroy();
   });
@@ -75,6 +84,7 @@ describe('Scale & Performance', () => {
     // Per README: "Single Map.set() operation ≈ 10-50 nanoseconds"
     // In practice with loop overhead, expect < 500ns per increment
     expect(nsPerIncrement).toBeLessThan(500);
+    perfLog('increment hot path', { 'ns/op': nsPerIncrement, 'total_ms': (totalNs / 1e6).toFixed(2), 'limit_ns': 500 });
 
     await stats.destroy();
   });
@@ -97,6 +107,7 @@ describe('Scale & Performance', () => {
 
     // Should handle 1M ops/sec easily (per README claims)
     expect(opsPerSec).toBeGreaterThan(1_000_000);
+    perfLog('1M increments throughput', { 'ops/sec': Math.round(opsPerSec), 'elapsed_ms': elapsed, 'limit_ops/sec': '1,000,000' });
 
     await stats.destroy();
   });
@@ -136,6 +147,7 @@ describe('Scale & Performance', () => {
     // Should complete in microseconds, not wait for 100ms flush
     expect(elapsed).toBeLessThan(50);
     expect(flushCompleted).toBe(false); // Flush still running
+    perfLog('hot path during flush', { 'elapsed_ms': elapsed, 'limit_ms': 50, 'ops': 10_000 });
 
     await flushPromise;
     expect(flushCompleted).toBe(true);
@@ -160,6 +172,7 @@ describe('Scale & Performance', () => {
 
     // Should be similar to individual increments
     expect(nsPerOp).toBeLessThan(1000);
+    perfLog('incrementMany batch', { 'ns/op': nsPerOp, 'total_ms': (totalNs / 1e6).toFixed(2), 'batch_size': batch.length, 'limit_ns': 1000 });
     expect(stats.pendingCount).toBe(10_000);
 
     await stats.destroy();
@@ -181,7 +194,7 @@ describe('Scale & Performance', () => {
 
     const from = new Date(0);
     const to = new Date('2099-12-31');
-    expect(adapter.query(key, from, to)).toBe(increments * deltaPerIncrement);
+    expect(await adapter.query(key, from, to)).toBe(increments * deltaPerIncrement);
 
     await stats.destroy();
   });

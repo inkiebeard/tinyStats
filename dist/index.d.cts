@@ -62,6 +62,32 @@ interface RedisPipeline {
 interface RedisClient {
     pipeline(): RedisPipeline;
 }
+interface StatRow {
+    bucket: Date;
+    count: number;
+}
+/** A bucketed row with its storage tier — returned by queryRange */
+interface StatRangeRow extends StatRow {
+    tier: Granularity;
+}
+type Granularity = 'hourly' | 'daily' | 'monthly';
+/**
+ * Optional extension point for storage backends that support reads.
+ * Implement this alongside FlushAdapter to enable query capabilities.
+ *
+ * Overloaded signatures:
+ *   query(key, from, to)               → total count as number
+ *   query(key, from, to, granularity)  → bucketed rows as StatRow[]
+ *
+ * queryRange(key, from, to) automatically selects the best tier per
+ * sub-range (hourly for recent, daily for medium, monthly for old)
+ * and returns StatRangeRow[] with a tier tag on each bucket.
+ */
+interface QueryAdapter {
+    query(key: string, from: Date, to: Date): Promise<number>;
+    query(key: string, from: Date, to: Date, granularity: Granularity): Promise<StatRow[]>;
+    queryRange(key: string, from: Date, to: Date): Promise<StatRangeRow[]>;
+}
 
 declare class StatsCollector {
     private active;
@@ -130,11 +156,18 @@ interface BucketEntry {
  * Internally keeps hourly buckets; exposes helpers for
  * daily/monthly aggregation matching the tiered schema.
  */
-declare class LocalAdapter implements FlushAdapter {
+declare class LocalAdapter implements FlushAdapter, QueryAdapter {
     private readonly store;
     flush(deltas: ReadonlyMap<string, number>, bucket: Date): Promise<void>;
     /** Total count for a key across an arbitrary date range */
-    query(key: string, from: Date, to: Date): number;
+    query(key: string, from: Date, to: Date): Promise<number>;
+    /** Bucketed counts aggregated to the requested granularity */
+    query(key: string, from: Date, to: Date, granularity: Granularity): Promise<StatRow[]>;
+    /**
+     * Auto-selects granularity per sub-range matching the tiered schema:
+     * ≤3 days ago → hourly, 3–30 days ago → daily, >30 days ago → monthly.
+     */
+    queryRange(key: string, from: Date, to: Date): Promise<StatRangeRow[]>;
     /** All known keys */
     keys(): string[];
     /** Raw hourly buckets for a key — useful for assertions in tests */
@@ -164,10 +197,15 @@ declare class RedisAdapter implements FlushAdapter {
 /** All hourly hash keys between two dates (inclusive) */
 declare function hourlyKeysInRange(namespace: string, from: Date, to: Date): string[];
 
-declare class PostgresAdapter implements FlushAdapter {
+declare class PostgresAdapter implements FlushAdapter, QueryAdapter {
     private readonly pool;
     private readonly knownPartitions;
     constructor(pool: PgPool);
+    query(key: string, from: Date, to: Date): Promise<number>;
+    query(key: string, from: Date, to: Date, granularity: Granularity): Promise<StatRow[]>;
+    /** Auto-selects tiers based on the date range. Recent data is hourly,
+     *  medium-range is daily, older data is monthly. */
+    queryRange(key: string, from: Date, to: Date): Promise<StatRangeRow[]>;
     flush(deltas: ReadonlyMap<string, number>, bucket: Date): Promise<void>;
     /**
      * Ensures the monthly partition for this bucket exists.
@@ -196,11 +234,7 @@ declare function queryMonthly(pool: PgPool, key: string, from: Date, to: Date): 
  * Automatically selects the appropriate tier based on the date range.
  * Returns rows in ascending time order.
  */
-declare function queryStats(pool: PgPool, key: string, from: Date, to: Date): Promise<Array<{
-    bucket: Date;
-    count: number;
-    tier: 'hourly' | 'daily' | 'monthly';
-}>>;
+declare function queryStats(pool: PgPool, key: string, from: Date, to: Date): Promise<StatRangeRow[]>;
 
 declare class CompositeAdapter implements FlushAdapter {
     private readonly adapters;
@@ -210,4 +244,4 @@ declare class CompositeAdapter implements FlushAdapter {
     close(): Promise<void>;
 }
 
-export { type CollectorOptions, CompositeAdapter, type FlushAdapter, LocalAdapter, type PgClient, type PgPool, PostgresAdapter, RedisAdapter, type RedisClient, RollupJob, type RollupOptions, type RollupResult, StatsCollector, hourlyKeysInRange, queryDaily, queryHourly, queryMonthly, queryStats };
+export { type CollectorOptions, CompositeAdapter, type FlushAdapter, type Granularity, LocalAdapter, type PgClient, type PgPool, PostgresAdapter, type QueryAdapter, RedisAdapter, type RedisClient, RollupJob, type RollupOptions, type RollupResult, type StatRangeRow, type StatRow, StatsCollector, hourlyKeysInRange, queryDaily, queryHourly, queryMonthly, queryStats };

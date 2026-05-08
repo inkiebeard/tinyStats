@@ -16,21 +16,20 @@ export class CompositeAdapter implements FlushAdapter {
       this.adapters.map((a) => a.flush(deltas, bucket))
     );
 
-    const failures = results.flatMap((r, i) =>
-      r.status === 'rejected' ? [{ err: r.reason, index: i }] : []
-    );
-
-    for (const { err, index } of failures) {
-      this.onPartialFailure?.(err, index);
+    // Single pass: invoke callback and collect errors simultaneously.
+    const errors: unknown[] = [];
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i]!;
+      if (r.status === 'rejected') {
+        errors.push(r.reason);
+        this.onPartialFailure?.(r.reason, i);
+      }
     }
 
     // Re-throw only if ALL adapters failed — partial failures are surfaced
     // via onPartialFailure and the collector's re-merge behaviour handles retry.
-    if (failures.length === this.adapters.length) {
-      throw new AggregateError(
-        failures.map((f) => f.err),
-        'All adapters failed during flush'
-      );
+    if (errors.length === this.adapters.length) {
+      throw new AggregateError(errors, 'All adapters failed during flush');
     }
   }
 

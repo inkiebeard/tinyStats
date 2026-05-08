@@ -19,7 +19,7 @@ describe('StatsCollector', () => {
     const from = new Date(0);
     const to = new Date('2099-12-31');
     expect(adapter.keys()).toContain('test:key');
-    expect(adapter.query('test:key', from, to)).toBe(5);
+    expect(await adapter.query('test:key', from, to)).toBe(5);
 
     await stats.destroy();
   });
@@ -37,9 +37,9 @@ describe('StatsCollector', () => {
 
     const from = new Date(0);
     const to = new Date('2099-12-31');
-    expect(adapter.query('key:a', from, to)).toBe(10);
-    expect(adapter.query('key:b', from, to)).toBe(20);
-    expect(adapter.query('key:c', from, to)).toBe(30);
+    expect(await adapter.query('key:a', from, to)).toBe(10);
+    expect(await adapter.query('key:b', from, to)).toBe(20);
+    expect(await adapter.query('key:c', from, to)).toBe(30);
 
     await stats.destroy();
   });
@@ -58,9 +58,9 @@ describe('StatsCollector', () => {
     const from = new Date(0);
     const to = new Date('2099-12-31');
 
-    expect(adapter.query('batch:1', from, to)).toBe(100);
-    expect(adapter.query('batch:2', from, to)).toBe(200);
-    expect(adapter.query('batch:3', from, to)).toBe(300);
+    expect(await adapter.query('batch:1', from, to)).toBe(100);
+    expect(await adapter.query('batch:2', from, to)).toBe(200);
+    expect(await adapter.query('batch:3', from, to)).toBe(300);
 
     await stats.destroy();
   });
@@ -136,7 +136,7 @@ describe('StatsCollector', () => {
 
     const from = new Date(0);
     const to = new Date('2099-12-31');
-    expect(adapter.query('before', from, to)).toBe(1);
+    expect(await adapter.query('before', from, to)).toBe(1);
     expect(adapter.keys()).not.toContain('after');
   });
 
@@ -151,6 +151,6 @@ describe('StatsCollector', () => {
 
     const from = new Date(0);
     const to = new Date('2099-12-31');
-    expect(adapter.query('pending', from, to)).toBe(42);
+    expect(await adapter.query('pending', from, to)).toBe(42);
   });
 });

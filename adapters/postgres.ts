@@ -6,13 +6,38 @@
 // A small in-process cache prevents redundant partition checks.
 // ─────────────────────────────────────────────────────────
 
-import type { FlushAdapter, PgPool } from '../types';
+import type { FlushAdapter, QueryAdapter, StatRow, StatRangeRow, Granularity, PgPool } from '../types';
 
-export class PostgresAdapter implements FlushAdapter {
+export class PostgresAdapter implements FlushAdapter, QueryAdapter {
   // Tracks which month partitions we've already confirmed exist
   private readonly knownPartitions = new Set<string>();
 
   constructor(private readonly pool: PgPool) {}
+
+  query(key: string, from: Date, to: Date): Promise<number>;
+  query(key: string, from: Date, to: Date, granularity: Granularity): Promise<StatRow[]>;
+  async query(
+    key: string,
+    from: Date,
+    to: Date,
+    granularity?: Granularity,
+  ): Promise<number | StatRow[]> {
+    if (!granularity) {
+      // Single aggregating query across all tiers — one round-trip, no row transfer
+      return queryTotal(this.pool, key, from, to);
+    }
+    switch (granularity) {
+      case 'hourly':  return queryHourly(this.pool, key, from, to);
+      case 'daily':   return queryDaily(this.pool, key, from, to);
+      case 'monthly': return queryMonthly(this.pool, key, from, to);
+    }
+  }
+
+  /** Auto-selects tiers based on the date range. Recent data is hourly,
+   *  medium-range is daily, older data is monthly. */
+  queryRange(key: string, from: Date, to: Date): Promise<StatRangeRow[]> {
+    return queryStats(this.pool, key, from, to);
+  }
 
   async flush(deltas: ReadonlyMap<string, number>, bucket: Date): Promise<void> {
     if (deltas.size === 0) return;
@@ -69,6 +94,26 @@ export class PostgresAdapter implements FlushAdapter {
 // ─────────────────────────────────────────────────────────
 // Query helpers — composable, not coupled to the adapter
 // ─────────────────────────────────────────────────────────
+
+/**
+ * Total count for a key across all tiers in a single aggregating query.
+ * Uses UNION ALL across all three tables so Postgres does the SUM
+ * server-side — one round-trip, minimal data transfer.
+ */
+async function queryTotal(pool: PgPool, key: string, from: Date, to: Date): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(count), 0)::bigint AS total
+     FROM (
+       SELECT count FROM stats_hourly  WHERE key = $1 AND bucket >= $2 AND bucket <= $3
+       UNION ALL
+       SELECT count FROM stats_daily   WHERE key = $1 AND bucket >= $2 AND bucket <= $3
+       UNION ALL
+       SELECT count FROM stats_monthly WHERE key = $1 AND bucket >= $2 AND bucket <= $3
+     ) t`,
+    [key, from, to]
+  );
+  return Number(rows[0]?.['total'] ?? 0);
+}
 
 /** Hourly counts for a key in a time range (from stats_hourly) */
 export async function queryHourly(
@@ -128,33 +173,32 @@ export async function queryStats(
   key: string,
   from: Date,
   to: Date
-): Promise<Array<{ bucket: Date; count: number; tier: 'hourly' | 'daily' | 'monthly' }>> {
-  const now = new Date();
-  const hourlyFrom = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
-  const dailyFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+): Promise<StatRangeRow[]> {
+  const nowMs = Date.now();
+  const hourlyFrom = new Date(nowMs - 3 * 24 * 60 * 60 * 1_000);
+  const dailyFrom  = new Date(nowMs - 30 * 24 * 60 * 60 * 1_000);
 
-  const results: Array<{ bucket: Date; count: number; tier: 'hourly' | 'daily' | 'monthly' }> = [];
+  // Build all needed queries upfront and run them in parallel.
+  // Ordered oldest→newest so concatenation is already chronological.
+  const monthly = from < dailyFrom
+    ? queryMonthly(pool, key, from, to < dailyFrom ? to : dailyFrom)
+        .then(rows => rows.map(r => ({ ...r, tier: 'monthly' as const })))
+    : Promise.resolve([] as StatRangeRow[]);
 
-  if (to >= hourlyFrom) {
-    const rows = await queryHourly(pool, key, from > hourlyFrom ? from : hourlyFrom, to);
-    results.push(...rows.map((r) => ({ ...r, tier: 'hourly' as const })));
-  }
+  const daily = from < hourlyFrom && to >= dailyFrom
+    ? queryDaily(pool, key, from > dailyFrom ? from : dailyFrom, to < hourlyFrom ? to : hourlyFrom)
+        .then(rows => rows.map(r => ({ ...r, tier: 'daily' as const })))
+    : Promise.resolve([] as StatRangeRow[]);
 
-  if (from < hourlyFrom && to >= dailyFrom) {
-    const rows = await queryDaily(
-      pool, key,
-      from > dailyFrom ? from : dailyFrom,
-      to < hourlyFrom ? to : hourlyFrom
-    );
-    results.push(...rows.map((r) => ({ ...r, tier: 'daily' as const })));
-  }
+  const hourly = to >= hourlyFrom
+    ? queryHourly(pool, key, from > hourlyFrom ? from : hourlyFrom, to)
+        .then(rows => rows.map(r => ({ ...r, tier: 'hourly' as const })))
+    : Promise.resolve([] as StatRangeRow[]);
 
-  if (from < dailyFrom) {
-    const rows = await queryMonthly(pool, key, from, to < dailyFrom ? to : dailyFrom);
-    results.push(...rows.map((r) => ({ ...r, tier: 'monthly' as const })));
-  }
-
-  return results.sort((a, b) => a.bucket.getTime() - b.bucket.getTime());
+  // Each segment sorted ASC by SQL ORDER BY; segments are in chronological
+  // order, so concatenation produces a globally sorted result — no sort needed.
+  const [m, d, h] = await Promise.all([monthly, daily, hourly]);
+  return [...m, ...d, ...h];
 }
 
 // ── Date helpers ──────────────────────────────────────────

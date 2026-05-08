@@ -87,3 +87,35 @@ export interface RedisPipeline {
 export interface RedisClient {
   pipeline(): RedisPipeline;
 }
+
+// ── Query types ───────────────────────────────────────────
+
+export interface StatRow {
+  bucket: Date;
+  count: number;
+}
+
+/** A bucketed row with its storage tier — returned by queryRange */
+export interface StatRangeRow extends StatRow {
+  tier: Granularity;
+}
+
+export type Granularity = 'hourly' | 'daily' | 'monthly';
+
+/**
+ * Optional extension point for storage backends that support reads.
+ * Implement this alongside FlushAdapter to enable query capabilities.
+ *
+ * Overloaded signatures:
+ *   query(key, from, to)               → total count as number
+ *   query(key, from, to, granularity)  → bucketed rows as StatRow[]
+ *
+ * queryRange(key, from, to) automatically selects the best tier per
+ * sub-range (hourly for recent, daily for medium, monthly for old)
+ * and returns StatRangeRow[] with a tier tag on each bucket.
+ */
+export interface QueryAdapter {
+  query(key: string, from: Date, to: Date): Promise<number>;
+  query(key: string, from: Date, to: Date, granularity: Granularity): Promise<StatRow[]>;
+  queryRange(key: string, from: Date, to: Date): Promise<StatRangeRow[]>;
+}

@@ -20,5 +20,9 @@ export type {
   RollupResult, 
   PgPool, 
   PgClient, 
-  RedisClient 
+  RedisClient,
+  QueryAdapter,
+  StatRow,
+  StatRangeRow,
+  Granularity,
 } from "./types";

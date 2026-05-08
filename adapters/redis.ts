@@ -77,7 +77,5 @@ export function hourlyKeysInRange(
 }
 
 function floorHour(date: Date): Date {
-  const d = new Date(date);
-  d.setUTCMinutes(0, 0, 0);
-  return d;
+  return new Date(Math.floor(date.getTime() / 3_600_000) * 3_600_000);
 }

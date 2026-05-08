@@ -1,8 +1,6 @@
 // tinyStats.ts
 function floorToHour(date) {
-  const d = new Date(date);
-  d.setUTCMinutes(0, 0, 0);
-  return d;
+  return new Date(Math.floor(date.getTime() / 36e5) * 36e5);
 }
 var StatsCollector = class {
   active = /* @__PURE__ */ new Map();
@@ -211,43 +209,104 @@ var RollupJob = class {
 
 // adapters/local.ts
 var LocalAdapter = class {
-  // key → sorted list of hourly buckets
+  // key → (bucket_ms → count): O(1) lookup and update on every flush
   store = /* @__PURE__ */ new Map();
   async flush(deltas, bucket) {
+    const bucketMs = bucket.getTime();
     for (const [key, count] of deltas) {
-      let entries = this.store.get(key);
-      if (!entries) {
-        entries = [];
-        this.store.set(key, entries);
+      let buckets = this.store.get(key);
+      if (!buckets) this.store.set(key, buckets = /* @__PURE__ */ new Map());
+      buckets.set(bucketMs, (buckets.get(bucketMs) ?? 0) + count);
+    }
+  }
+  async query(key, from, to, granularity) {
+    const src = this.store.get(key);
+    const fromMs = from.getTime();
+    const toMs = to.getTime();
+    if (!granularity) {
+      if (!src) return 0;
+      let total = 0;
+      for (const [t, count] of src) {
+        if (t >= fromMs && t <= toMs) total += count;
       }
-      const existing = entries.find(
-        (e) => e.bucket.getTime() === bucket.getTime()
-      );
+      return total;
+    }
+    if (!src) return [];
+    const agg = /* @__PURE__ */ new Map();
+    for (const [t, count] of src) {
+      if (t < fromMs || t > toMs) continue;
+      const k = floorBucketMs(t, granularity);
+      agg.set(k, (agg.get(k) ?? 0) + count);
+    }
+    const result = [];
+    for (const [ts, count] of agg) {
+      result.push({ bucket: new Date(ts), count });
+    }
+    return result.sort((a, b) => a.bucket.getTime() - b.bucket.getTime());
+  }
+  /**
+   * Auto-selects granularity per sub-range matching the tiered schema:
+   * ≤3 days ago → hourly, 3–30 days ago → daily, >30 days ago → monthly.
+   */
+  async queryRange(key, from, to) {
+    const src = this.store.get(key);
+    if (!src) return [];
+    const now = Date.now();
+    const hourlyFromMs = now - 3 * 24 * 60 * 60 * 1e3;
+    const dailyFromMs = now - 30 * 24 * 60 * 60 * 1e3;
+    const fromMs = from.getTime();
+    const toMs = to.getTime();
+    const buckets = /* @__PURE__ */ new Map();
+    for (const [t, count] of src) {
+      if (t < fromMs || t > toMs) continue;
+      let tier;
+      let k;
+      if (t >= hourlyFromMs) {
+        tier = "hourly";
+        k = floorBucketMs(t, "hourly");
+      } else if (t >= dailyFromMs) {
+        tier = "daily";
+        k = floorBucketMs(t, "daily");
+      } else {
+        tier = "monthly";
+        k = floorBucketMs(t, "monthly");
+      }
+      const existing = buckets.get(k);
       if (existing) {
         existing.count += count;
       } else {
-        entries.push({ bucket: new Date(bucket), count });
+        buckets.set(k, { count, tier });
       }
     }
-  }
-  /** Total count for a key across an arbitrary date range */
-  query(key, from, to) {
-    const entries = this.store.get(key) ?? [];
-    return entries.filter((e) => e.bucket >= from && e.bucket <= to).reduce((sum, e) => sum + e.count, 0);
+    const result = [];
+    for (const [ts, { count, tier }] of buckets) {
+      result.push({ bucket: new Date(ts), count, tier });
+    }
+    return result.sort((a, b) => a.bucket.getTime() - b.bucket.getTime());
   }
   /** All known keys */
   keys() {
-    return Array.from(this.store.keys());
+    return [...this.store.keys()];
   }
   /** Raw hourly buckets for a key — useful for assertions in tests */
   rawHourly(key) {
-    return [...this.store.get(key) ?? []];
+    const buckets = this.store.get(key);
+    if (!buckets) return [];
+    return [...buckets.entries()].map(([ts, count]) => ({ bucket: new Date(ts), count })).sort((a, b) => a.bucket.getTime() - b.bucket.getTime());
   }
   /** Wipe all data — useful between test cases */
   clear() {
     this.store.clear();
   }
 };
+function floorBucketMs(ms, granularity) {
+  if (granularity === "hourly") return Math.floor(ms / 36e5) * 36e5;
+  if (granularity === "daily") return Math.floor(ms / 864e5) * 864e5;
+  const d = new Date(ms);
+  d.setUTCDate(1);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+}
 
 // adapters/redis.ts
 var RedisAdapter = class {
@@ -283,9 +342,7 @@ function hourlyKeysInRange(namespace, from, to) {
   return keys;
 }
 function floorHour(date) {
-  const d = new Date(date);
-  d.setUTCMinutes(0, 0, 0);
-  return d;
+  return new Date(Math.floor(date.getTime() / 36e5) * 36e5);
 }
 
 // adapters/postgres.ts
@@ -296,6 +353,24 @@ var PostgresAdapter = class {
   pool;
   // Tracks which month partitions we've already confirmed exist
   knownPartitions = /* @__PURE__ */ new Set();
+  async query(key, from, to, granularity) {
+    if (!granularity) {
+      return queryTotal(this.pool, key, from, to);
+    }
+    switch (granularity) {
+      case "hourly":
+        return queryHourly(this.pool, key, from, to);
+      case "daily":
+        return queryDaily(this.pool, key, from, to);
+      case "monthly":
+        return queryMonthly(this.pool, key, from, to);
+    }
+  }
+  /** Auto-selects tiers based on the date range. Recent data is hourly,
+   *  medium-range is daily, older data is monthly. */
+  queryRange(key, from, to) {
+    return queryStats(this.pool, key, from, to);
+  }
   async flush(deltas, bucket) {
     if (deltas.size === 0) return;
     await this.ensureHourlyPartition(bucket);
@@ -338,6 +413,20 @@ var PostgresAdapter = class {
     }
   }
 };
+async function queryTotal(pool, key, from, to) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(count), 0)::bigint AS total
+     FROM (
+       SELECT count FROM stats_hourly  WHERE key = $1 AND bucket >= $2 AND bucket <= $3
+       UNION ALL
+       SELECT count FROM stats_daily   WHERE key = $1 AND bucket >= $2 AND bucket <= $3
+       UNION ALL
+       SELECT count FROM stats_monthly WHERE key = $1 AND bucket >= $2 AND bucket <= $3
+     ) t`,
+    [key, from, to]
+  );
+  return Number(rows[0]?.["total"] ?? 0);
+}
 async function queryHourly(pool, key, from, to) {
   const { rows } = await pool.query(
     `SELECT bucket, count FROM stats_hourly
@@ -366,28 +455,14 @@ async function queryMonthly(pool, key, from, to) {
   return rows.map((r) => ({ bucket: new Date(r["bucket"]), count: Number(r["count"]) }));
 }
 async function queryStats(pool, key, from, to) {
-  const now = /* @__PURE__ */ new Date();
-  const hourlyFrom = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1e3);
-  const dailyFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1e3);
-  const results = [];
-  if (to >= hourlyFrom) {
-    const rows = await queryHourly(pool, key, from > hourlyFrom ? from : hourlyFrom, to);
-    results.push(...rows.map((r) => ({ ...r, tier: "hourly" })));
-  }
-  if (from < hourlyFrom && to >= dailyFrom) {
-    const rows = await queryDaily(
-      pool,
-      key,
-      from > dailyFrom ? from : dailyFrom,
-      to < hourlyFrom ? to : hourlyFrom
-    );
-    results.push(...rows.map((r) => ({ ...r, tier: "daily" })));
-  }
-  if (from < dailyFrom) {
-    const rows = await queryMonthly(pool, key, from, to < dailyFrom ? to : dailyFrom);
-    results.push(...rows.map((r) => ({ ...r, tier: "monthly" })));
-  }
-  return results.sort((a, b) => a.bucket.getTime() - b.bucket.getTime());
+  const nowMs = Date.now();
+  const hourlyFrom = new Date(nowMs - 3 * 24 * 60 * 60 * 1e3);
+  const dailyFrom = new Date(nowMs - 30 * 24 * 60 * 60 * 1e3);
+  const monthly = from < dailyFrom ? queryMonthly(pool, key, from, to < dailyFrom ? to : dailyFrom).then((rows) => rows.map((r) => ({ ...r, tier: "monthly" }))) : Promise.resolve([]);
+  const daily = from < hourlyFrom && to >= dailyFrom ? queryDaily(pool, key, from > dailyFrom ? from : dailyFrom, to < hourlyFrom ? to : hourlyFrom).then((rows) => rows.map((r) => ({ ...r, tier: "daily" }))) : Promise.resolve([]);
+  const hourly = to >= hourlyFrom ? queryHourly(pool, key, from > hourlyFrom ? from : hourlyFrom, to).then((rows) => rows.map((r) => ({ ...r, tier: "hourly" }))) : Promise.resolve([]);
+  const [m, d, h] = await Promise.all([monthly, daily, hourly]);
+  return [...m, ...d, ...h];
 }
 function monthOf(date) {
   return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1 };
@@ -412,17 +487,16 @@ var CompositeAdapter = class {
     const results = await Promise.allSettled(
       this.adapters.map((a) => a.flush(deltas, bucket))
     );
-    const failures = results.flatMap(
-      (r, i) => r.status === "rejected" ? [{ err: r.reason, index: i }] : []
-    );
-    for (const { err, index } of failures) {
-      this.onPartialFailure?.(err, index);
+    const errors = [];
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r.status === "rejected") {
+        errors.push(r.reason);
+        this.onPartialFailure?.(r.reason, i);
+      }
     }
-    if (failures.length === this.adapters.length) {
-      throw new AggregateError(
-        failures.map((f) => f.err),
-        "All adapters failed during flush"
-      );
+    if (errors.length === this.adapters.length) {
+      throw new AggregateError(errors, "All adapters failed during flush");
     }
   }
   async close() {
