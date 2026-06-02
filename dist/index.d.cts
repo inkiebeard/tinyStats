@@ -16,9 +16,51 @@ interface CollectorOptions {
     adapter: FlushAdapter;
     /** How often to flush in-memory buffer. Default: 5000ms */
     flushIntervalMs?: number;
+    /**
+     * Retry behavior for a failed flush attempt.
+     * Defaults are tuned for transient lock/deadlock contention.
+     */
+    flushRetry?: FlushRetryOptions;
+    /**
+     * Optional hook to override the flushing mechanism.
+     * Default behavior calls adapter.flush(deltas, bucket).
+     */
+    flushExecutor?: FlushExecutor;
     /** Called on flush errors. Default: console.error. Must never throw. */
     onFlushError?: (err: unknown) => void;
 }
+interface FlushAttemptContext {
+    attempt: number;
+    maxAttempts: number;
+    error: unknown;
+    deltas: ReadonlyMap<string, number>;
+    bucket: Date;
+}
+interface FlushRetryOptions {
+    /** Total attempts including the first one. Default: 3 */
+    maxAttempts?: number;
+    /** Base backoff delay in ms. Default: 25 */
+    baseDelayMs?: number;
+    /** Maximum backoff delay in ms. Default: 1000 */
+    maxDelayMs?: number;
+    /** Randomization ratio applied around backoff delay. Default: 0.25 */
+    jitterRatio?: number;
+    /** Explicitly retry when error.code matches one of these values. */
+    retryableCodes?: string[];
+    /** Never retry when error.code matches one of these values. */
+    nonRetryableCodes?: string[];
+    /**
+     * Fallback retry decision after nonRetryableCodes/retryableCodes checks.
+     * Return true to retry. Default retries known transient lock/contention errors.
+     */
+    shouldRetry?: (ctx: FlushAttemptContext) => boolean;
+}
+type FlushExecutor = (ctx: {
+    deltas: ReadonlyMap<string, number>;
+    bucket: Date;
+    adapter: FlushAdapter;
+    attempt: number;
+}) => Promise<void>;
 interface RollupOptions {
     /** How many days to retain hourly rows before rolling to daily. Default: 3 */
     hourlyRetentionDays?: number;
@@ -93,6 +135,10 @@ declare class StatsCollector {
     private active;
     private readonly adapter;
     private readonly onFlushError;
+    private readonly flushExecutor;
+    private readonly flushRetry;
+    private readonly retryableCodes;
+    private readonly nonRetryableCodes;
     private readonly timer;
     private flushing;
     private destroyed;
@@ -108,6 +154,8 @@ declare class StatsCollector {
     incrementMany(entries: Iterable<[key: string, delta: number]>): void;
     /** Manually trigger a flush — useful for graceful shutdown. */
     flush(): Promise<void>;
+    private flushWithRetry;
+    private shouldRetryFlushError;
     /** Stop the timer, flush remaining counts, close the adapter. */
     destroy(): Promise<void>;
     /** Current unflushed buffer size — useful for monitoring. */
@@ -244,4 +292,4 @@ declare class CompositeAdapter implements FlushAdapter {
     close(): Promise<void>;
 }
 
-export { type CollectorOptions, CompositeAdapter, type FlushAdapter, type Granularity, LocalAdapter, type PgClient, type PgPool, PostgresAdapter, type QueryAdapter, RedisAdapter, type RedisClient, RollupJob, type RollupOptions, type RollupResult, type StatRangeRow, type StatRow, StatsCollector, hourlyKeysInRange, queryDaily, queryHourly, queryMonthly, queryStats };
+export { type CollectorOptions, CompositeAdapter, type FlushAdapter, type FlushAttemptContext, type FlushExecutor, type FlushRetryOptions, type Granularity, LocalAdapter, type PgClient, type PgPool, PostgresAdapter, type QueryAdapter, RedisAdapter, type RedisClient, RollupJob, type RollupOptions, type RollupResult, type StatRangeRow, type StatRow, StatsCollector, hourlyKeysInRange, queryDaily, queryHourly, queryMonthly, queryStats };

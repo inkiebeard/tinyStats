@@ -18,9 +18,54 @@ export interface CollectorOptions {
   adapter: FlushAdapter;
   /** How often to flush in-memory buffer. Default: 5000ms */
   flushIntervalMs?: number;
+  /**
+   * Retry behavior for a failed flush attempt.
+   * Defaults are tuned for transient lock/deadlock contention.
+   */
+  flushRetry?: FlushRetryOptions;
+  /**
+   * Optional hook to override the flushing mechanism.
+   * Default behavior calls adapter.flush(deltas, bucket).
+   */
+  flushExecutor?: FlushExecutor;
   /** Called on flush errors. Default: console.error. Must never throw. */
   onFlushError?: (err: unknown) => void;
 }
+
+export interface FlushAttemptContext {
+  attempt: number;
+  maxAttempts: number;
+  error: unknown;
+  deltas: ReadonlyMap<string, number>;
+  bucket: Date;
+}
+
+export interface FlushRetryOptions {
+  /** Total attempts including the first one. Default: 3 */
+  maxAttempts?: number;
+  /** Base backoff delay in ms. Default: 25 */
+  baseDelayMs?: number;
+  /** Maximum backoff delay in ms. Default: 1000 */
+  maxDelayMs?: number;
+  /** Randomization ratio applied around backoff delay. Default: 0.25 */
+  jitterRatio?: number;
+  /** Explicitly retry when error.code matches one of these values. */
+  retryableCodes?: string[];
+  /** Never retry when error.code matches one of these values. */
+  nonRetryableCodes?: string[];
+  /**
+   * Fallback retry decision after nonRetryableCodes/retryableCodes checks.
+   * Return true to retry. Default retries known transient lock/contention errors.
+   */
+  shouldRetry?: (ctx: FlushAttemptContext) => boolean;
+}
+
+export type FlushExecutor = (ctx: {
+  deltas: ReadonlyMap<string, number>;
+  bucket: Date;
+  adapter: FlushAdapter;
+  attempt: number;
+}) => Promise<void>;
 
 export interface RollupOptions {
   /** How many days to retain hourly rows before rolling to daily. Default: 3 */

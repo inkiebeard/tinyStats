@@ -6,11 +6,28 @@ var StatsCollector = class {
   active = /* @__PURE__ */ new Map();
   adapter;
   onFlushError;
+  flushExecutor;
+  flushRetry;
+  retryableCodes;
+  nonRetryableCodes;
   timer;
   flushing = false;
   destroyed = false;
   constructor(opts) {
     this.adapter = opts.adapter;
+    this.flushExecutor = opts.flushExecutor ?? defaultFlushExecutor;
+    const retryOpts = opts.flushRetry ?? {};
+    this.flushRetry = {
+      maxAttempts: Math.max(1, retryOpts.maxAttempts ?? 3),
+      baseDelayMs: Math.max(0, retryOpts.baseDelayMs ?? 25),
+      maxDelayMs: Math.max(0, retryOpts.maxDelayMs ?? 1e3),
+      jitterRatio: clamp(retryOpts.jitterRatio ?? 0.25, 0, 1),
+      retryableCodes: retryOpts.retryableCodes ?? [],
+      nonRetryableCodes: retryOpts.nonRetryableCodes ?? [],
+      shouldRetry: retryOpts.shouldRetry ?? isLikelyTransientFlushError
+    };
+    this.retryableCodes = new Set(this.flushRetry.retryableCodes.map(normalizeCode));
+    this.nonRetryableCodes = new Set(this.flushRetry.nonRetryableCodes.map(normalizeCode));
     this.onFlushError = opts.onFlushError ?? ((e) => console.error("[stats:collector] flush error", e));
     this.timer = setInterval(
       () => {
@@ -48,7 +65,7 @@ var StatsCollector = class {
     const bucket = floorToHour(/* @__PURE__ */ new Date());
     this.flushing = true;
     try {
-      await this.adapter.flush(toFlush, bucket);
+      await this.flushWithRetry(toFlush, bucket);
     } catch (err) {
       this.onFlushError(err);
       for (const [key, count] of toFlush) {
@@ -58,6 +75,31 @@ var StatsCollector = class {
     } finally {
       this.flushing = false;
     }
+  }
+  async flushWithRetry(deltas, bucket) {
+    const { maxAttempts, baseDelayMs, maxDelayMs, jitterRatio, shouldRetry } = this.flushRetry;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.flushExecutor({ deltas, bucket, adapter: this.adapter, attempt });
+        return;
+      } catch (error) {
+        const isLastAttempt = attempt >= maxAttempts;
+        if (isLastAttempt || !this.shouldRetryFlushError({ attempt, maxAttempts, error, deltas, bucket }, shouldRetry)) {
+          throw error;
+        }
+        const expDelay = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));
+        const jitter = expDelay * jitterRatio;
+        const rawDelayMs = Math.max(0, expDelay - jitter + Math.random() * (jitter * 2));
+        const delayMs = Math.min(maxDelayMs, rawDelayMs);
+        await sleep(delayMs);
+      }
+    }
+  }
+  shouldRetryFlushError(ctx, fallbackShouldRetry) {
+    const code = getErrorCode(ctx.error);
+    if (code && this.nonRetryableCodes.has(code)) return false;
+    if (code && this.retryableCodes.has(code)) return true;
+    return fallbackShouldRetry(ctx);
   }
   /** Stop the timer, flush remaining counts, close the adapter. */
   async destroy() {
@@ -71,6 +113,34 @@ var StatsCollector = class {
     return this.active.size;
   }
 };
+var defaultFlushExecutor = async ({ deltas, bucket, adapter }) => {
+  await adapter.flush(deltas, bucket);
+};
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function isLikelyTransientFlushError(ctx) {
+  const err = ctx.error;
+  if (!err || typeof err !== "object") return false;
+  const code = "code" in err && typeof err.code === "string" ? normalizeCode(err.code) : "";
+  if (code === "40P01" || code === "40001" || code === "55P03") return true;
+  if (code === "ER_LOCK_DEADLOCK" || code === "ER_LOCK_WAIT_TIMEOUT") return true;
+  if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true;
+  const message = "message" in err && typeof err.message === "string" ? err.message.toLowerCase() : "";
+  return message.includes("deadlock") || message.includes("lock wait timeout") || message.includes("serialization failure") || message.includes("could not serialize");
+}
+function getErrorCode(err) {
+  if (!err || typeof err !== "object") return "";
+  const raw = "code" in err ? err.code : void 0;
+  if (typeof raw !== "string") return "";
+  return normalizeCode(raw);
+}
+function normalizeCode(code) {
+  return code.trim().toUpperCase();
+}
 
 // rollup.ts
 var DEFAULT_LOCKS = {
