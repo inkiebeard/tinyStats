@@ -131,6 +131,18 @@ new RollupJob(pool, {
   dailyRetentionDays:  60,
   onRollup: (r) => logger.info(r),
 });
+
+new StatsCollector({
+  adapter,
+  flushRetry: {
+    maxAttempts: 5,
+    baseDelayMs: 30,
+    maxDelayMs: 750,
+    jitterRatio: 0.35,
+    retryableCodes: ['ER_LOCK_DEADLOCK'],
+    nonRetryableCodes: ['23505'],
+  },
+});
 ```
 
 ## Querying
@@ -175,6 +187,22 @@ Rows are only written for windows where activity occurred — sparse entities us
 ## Flush error behaviour
 
 On adapter failure, unwritten deltas are re-merged into the active buffer and retried on the next flush cycle. A persistent adapter failure causes slight over-counting on recovery rather than data loss.
+
+By default, each flush attempt also retries transient lock/contention failures (for example deadlocks) with exponential backoff + jitter before surfacing the error.
+
+You can pass retryable and non-retryable error codes in the constructor via `flushRetry`. Code matching is case-insensitive, and `nonRetryableCodes` always wins if a code appears in both lists.
+
+You can fully override the flush execution mechanism:
+
+```typescript
+new StatsCollector({
+  adapter,
+  flushExecutor: async ({ deltas, bucket, adapter, attempt }) => {
+    // Custom behavior (circuit breaker, tracing, custom lock handling, etc.)
+    await adapter.flush(deltas, bucket);
+  },
+});
+```
 
 ## API
 

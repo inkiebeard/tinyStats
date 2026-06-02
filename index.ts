@@ -15,6 +15,9 @@ export { CompositeAdapter } from "./adapters/composite";
 
 export type { 
   FlushAdapter, 
+  FlushAttemptContext,
+  FlushRetryOptions,
+  FlushExecutor,
   CollectorOptions, 
   RollupOptions, 
   RollupResult, 

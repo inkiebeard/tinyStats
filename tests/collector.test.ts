@@ -124,6 +124,122 @@ describe('StatsCollector', () => {
     await stats.destroy();
   });
 
+  it('retries transient deadlock errors before succeeding', async () => {
+    const adapter: FlushAdapter = {
+      flush: vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error('deadlock detected'), { code: '40P01' }))
+        .mockRejectedValueOnce(Object.assign(new Error('deadlock detected again'), { code: '40P01' }))
+        .mockResolvedValue(undefined),
+    };
+
+    const stats = new StatsCollector({
+      adapter,
+      flushIntervalMs: 1000,
+      flushRetry: {
+        maxAttempts: 3,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+        jitterRatio: 0,
+      },
+    });
+
+    stats.increment('key:retry', 7);
+    await stats.flush();
+
+    expect(adapter.flush).toHaveBeenCalledTimes(3);
+    expect(stats.pendingCount).toBe(0);
+
+    await stats.destroy();
+  });
+
+  it('supports overriding flush execution logic', async () => {
+    const adapter: FlushAdapter = {
+      flush: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const flushExecutor = vi.fn(async ({ deltas }) => {
+      for (const _ of deltas) {
+        // no-op: test hook captures control instead of calling adapter.flush
+      }
+    });
+
+    const stats = new StatsCollector({
+      adapter,
+      flushIntervalMs: 1000,
+      flushExecutor,
+    });
+
+    stats.increment('key:override', 5);
+    await stats.flush();
+
+    expect(flushExecutor).toHaveBeenCalledTimes(1);
+    expect(adapter.flush).not.toHaveBeenCalled();
+    expect(stats.pendingCount).toBe(0);
+
+    await stats.destroy();
+  });
+
+  it('retries when code is configured as retryable', async () => {
+    const adapter: FlushAdapter = {
+      flush: vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error('temporary issue'), { code: 'E_TRANSIENT' }))
+        .mockResolvedValue(undefined),
+    };
+
+    const stats = new StatsCollector({
+      adapter,
+      flushIntervalMs: 1000,
+      flushRetry: {
+        maxAttempts: 2,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+        jitterRatio: 0,
+        retryableCodes: ['e_transient'],
+      },
+    });
+
+    stats.increment('key:custom-retryable', 1);
+    await stats.flush();
+
+    expect(adapter.flush).toHaveBeenCalledTimes(2);
+    expect(stats.pendingCount).toBe(0);
+
+    await stats.destroy();
+  });
+
+  it('does not retry when code is configured as non-retryable', async () => {
+    const adapter: FlushAdapter = {
+      flush: vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('deadlock detected'), { code: '40P01' })),
+    };
+
+    const onFlushError = vi.fn();
+    const stats = new StatsCollector({
+      adapter,
+      flushIntervalMs: 1000,
+      onFlushError,
+      flushRetry: {
+        maxAttempts: 3,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+        jitterRatio: 0,
+        nonRetryableCodes: ['40p01'],
+      },
+    });
+
+    stats.increment('key:custom-non-retryable', 1);
+    await stats.flush();
+
+    expect(adapter.flush).toHaveBeenCalledTimes(1);
+    expect(onFlushError).toHaveBeenCalledTimes(1);
+    expect(stats.pendingCount).toBe(1);
+
+    await stats.destroy();
+  });
+
   it('ignores increments after destroy', async () => {
     const adapter = new LocalAdapter();
     const stats = new StatsCollector({ adapter, flushIntervalMs: 1000 });
