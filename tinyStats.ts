@@ -10,14 +10,22 @@ function floorToHour(date: Date): Date {
   return new Date(Math.floor(date.getTime() / 3_600_000) * 3_600_000);
 }
 
+interface InternalFlushRetryPolicy {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+  jitterRatio: number;
+  retryableCodes: string[];
+  nonRetryableCodes: string[];
+  shouldRetry: (ctx: FlushAttemptContext) => boolean;
+}
+
 export class StatsCollector {
   private active = new Map<string, number>();
   private readonly adapter: FlushAdapter;
   private readonly onFlushError: (err: unknown) => void;
   private readonly flushExecutor: FlushExecutor;
-  private readonly flushRetry: Required<Omit<FlushRetryOptions, 'shouldRetry'>> & {
-    shouldRetry: (ctx: FlushAttemptContext) => boolean;
-  };
+  private readonly flushRetry: InternalFlushRetryPolicy;
   private readonly retryableCodes: ReadonlySet<string>;
   private readonly nonRetryableCodes: ReadonlySet<string>;
   private readonly timer: ReturnType<typeof setInterval>;
@@ -118,7 +126,8 @@ export class StatsCollector {
 
         const expDelay = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));
         const jitter = expDelay * jitterRatio;
-        const delayMs = Math.max(0, expDelay - jitter + Math.random() * (jitter * 2));
+        const rawDelayMs = Math.max(0, expDelay - jitter + Math.random() * (jitter * 2));
+        const delayMs = Math.min(maxDelayMs, rawDelayMs);
         await sleep(delayMs);
       }
     }
@@ -165,7 +174,7 @@ function isLikelyTransientFlushError(ctx: FlushAttemptContext): boolean {
   if (!err || typeof err !== 'object') return false;
 
   const code = 'code' in err && typeof err.code === 'string'
-    ? err.code.toUpperCase()
+    ? normalizeCode(err.code)
     : '';
 
   if (code === '40P01' || code === '40001' || code === '55P03') return true; // Postgres
