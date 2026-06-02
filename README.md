@@ -188,7 +188,7 @@ Rows are only written for windows where activity occurred — sparse entities us
 
 On adapter failure, unwritten deltas are re-merged into the active buffer and retried on the next flush cycle. A persistent adapter failure causes slight over-counting on recovery rather than data loss.
 
-By default, each flush attempt also retries transient lock/contention failures (for example deadlocks) with exponential backoff + jitter before surfacing the error.
+By default, each flush attempt also retries transient lock/contention failures (for example deadlocks) with exponential backoff + jitter before invoking `onFlushError` and re-merging deltas.
 
 You can pass retryable and non-retryable error codes in the constructor via `flushRetry`. Code matching is case-insensitive, and `nonRetryableCodes` always wins if a code appears in both lists.
 

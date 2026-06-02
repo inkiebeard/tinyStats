@@ -54,6 +54,7 @@ export interface FlushRetryOptions {
   /** Never retry when error.code matches one of these values. */
   nonRetryableCodes?: string[];
   /**
+   * Fallback retry decision after nonRetryableCodes/retryableCodes checks.
    * Return true to retry. Default retries known transient lock/contention errors.
    */
   shouldRetry?: (ctx: FlushAttemptContext) => boolean;

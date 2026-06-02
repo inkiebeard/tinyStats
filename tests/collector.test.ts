@@ -240,6 +240,73 @@ describe('StatsCollector', () => {
     await stats.destroy();
   });
 
+  it('calls shouldRetry only as fallback when code lists do not match', async () => {
+    const adapter: FlushAdapter = {
+      flush: vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error('transient fallback'), { code: 'E_FALLBACK' }))
+        .mockResolvedValue(undefined),
+    };
+
+    const shouldRetry = vi.fn().mockReturnValue(true);
+    const stats = new StatsCollector({
+      adapter,
+      flushIntervalMs: 1000,
+      flushRetry: {
+        maxAttempts: 2,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+        jitterRatio: 0,
+        retryableCodes: ['E_OTHER'],
+        nonRetryableCodes: ['E_NEVER'],
+        shouldRetry,
+      },
+    });
+
+    stats.increment('key:should-retry-fallback', 1);
+    await stats.flush();
+
+    expect(shouldRetry).toHaveBeenCalledTimes(1);
+    expect(adapter.flush).toHaveBeenCalledTimes(2);
+    expect(stats.pendingCount).toBe(0);
+
+    await stats.destroy();
+  });
+
+  it('does not call shouldRetry when nonRetryableCodes matches', async () => {
+    const adapter: FlushAdapter = {
+      flush: vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('hard failure'), { code: 'E_NO_RETRY' })),
+    };
+
+    const onFlushError = vi.fn();
+    const shouldRetry = vi.fn().mockReturnValue(true);
+    const stats = new StatsCollector({
+      adapter,
+      flushIntervalMs: 1000,
+      onFlushError,
+      flushRetry: {
+        maxAttempts: 3,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+        jitterRatio: 0,
+        nonRetryableCodes: ['e_no_retry'],
+        shouldRetry,
+      },
+    });
+
+    stats.increment('key:no-retry-precedence', 1);
+    await stats.flush();
+
+    expect(shouldRetry).not.toHaveBeenCalled();
+    expect(adapter.flush).toHaveBeenCalledTimes(1);
+    expect(onFlushError).toHaveBeenCalledTimes(1);
+    expect(stats.pendingCount).toBe(1);
+
+    await stats.destroy();
+  });
+
   it('ignores increments after destroy', async () => {
     const adapter = new LocalAdapter();
     const stats = new StatsCollector({ adapter, flushIntervalMs: 1000 });
